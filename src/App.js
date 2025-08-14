@@ -7,7 +7,8 @@ import GameView from "./GameView";
 import Leaderboard from "./Leaderboard";
 import "./App.css";
 
-const socket = io("http://localhost:4000");
+// CHANGE THIS LINE TO YOUR LIVE BACKEND URL
+const socket = io("https://your-backend-api.onrender.com");
 
 export default function App() {
   const [username, setUsername] = useState("");
