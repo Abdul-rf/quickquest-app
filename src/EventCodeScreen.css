@@ -1,0 +1,63 @@
+.event-code-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background-color: #282c34;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+.event-code-box {
+  background: #3a3f4a;
+  padding: 40px;
+  border-radius: 10px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  text-align: center;
+  width: 300px;
+}
+
+.event-code-box h2 {
+  font-size: 1.8em;
+  margin-bottom: 20px;
+}
+
+.event-code-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.input-group input {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 5px;
+  background: #282c34;
+  color: white;
+  font-size: 1em;
+  text-align: center;
+}
+
+.error-message {
+  color: #ff6b6b;
+  margin-top: -10px;
+  font-size: 0.9em;
+}
+
+.start-game-button {
+  padding: 12px;
+  border: none;
+  border-radius: 5px;
+  background-color: #61dafb;
+  color: #282c34;
+  font-size: 1.1em;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.start-game-button:hover {
+  background-color: #21a1f1;
+}
