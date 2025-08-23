@@ -11,7 +11,7 @@ const games = [
     description: 'Find 5 differences between the two images.',
     images: {
       left: '/images/difference-left.png',
-      right: '/images/difference-right.png',
+      right: '/images/difference-left.png',
     },
     differenceCoords: [
       { x: 29, y: 133, found: false },
@@ -97,11 +97,8 @@ const App = () => {
       console.error('Firebase initialization error:', error);
     }
 
-    const serverURL =
-      (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_SOCKET_URL) ||
-      (window.location.protocol === 'https:'
-        ? window.location.origin
-        : 'http://localhost:4000');
+    // --- UPDATE: Point this to your live Render backend URL ---
+    const serverURL = 'https://quickquest-backend.onrender.com';
 
     const newSocket = io(serverURL, {
       transports: ['websocket'],
@@ -125,7 +122,8 @@ const App = () => {
       console.log('Connected to server:', serverURL);
     });
 
-    newSocket.on('connect_error', () => {
+    newSocket.on('connect_error', (err) => {
+      console.error('Connection Error:', err);
       clearTimeout(offlineFallback);
       setIsOffline(true);
       try { newSocket.disconnect(); } catch {}
@@ -177,7 +175,6 @@ const App = () => {
         }
       } else {
         setConnectionMessage('Failed to join event: ' + response.message);
-        // Using a custom modal/alert would be better than window.alert
         alert(response.message);
       }
     });
