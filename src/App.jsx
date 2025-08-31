@@ -1,17 +1,29 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { initializeApp } from 'firebase/app';
 
+
+// --- Firebase Initialization (Client-side) ---
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBGBGrjPwiGKksG6NCU1bL95s7RRqo1X40",
+  authDomain: "quickquest-40069.firebaseapp.com",
+  projectId: "quickquest-40069",
+  storageBucket: "quickquest-40069.firebasestorage.app",
+  messagingSenderId: "8939930784",
+  appId: "1:8939930784:web:a1c272d9262cfb4169b5c5",
+  measurementId: "G-8HJ5KHF4BD"
+};
+
+
 // --- Constants & Game Data ---
-const games = [
-  {
-    id: 'game-1',
+const games = {
+  'spot-the-difference': {
+    id: 'spot-the-difference',
     name: 'Spot the Difference',
-    description: 'Find 5 differences between the two images.',
     images: {
       left: '/images/difference-left.png',
-      right: '/images/difference-left.png',
+      right: '/images/difference-right.png',
     },
     differenceCoords: [
       { x: 29, y: 133, found: false },
@@ -21,17 +33,11 @@ const games = [
       { x: 199, y: 130, found: false },
     ],
   },
-];
-
-// --- Firebase Initialization (Client-side) ---
-// IMPORTANT: Replace with your actual Firebase config
-const FIREBASE_CONFIG = {
-  apiKey: "your-api-key",
-  authDomain: "your-auth-domain",
-  projectId: "your-project-id",
-  storageBucket: "your-storage-bucket",
-  messagingSenderId: "your-messaging-sender-id",
-  appId: "your-app-id",
+  'image-scramble': {
+    id: 'image-scramble',
+    name: 'Image Scramble',
+    imageParts: Array.from({ length: 9 }, (_, i) => `/images/logo/logo-part-${i + 1}.jpg`),
+  }
 };
 
 const App = () => {
@@ -44,68 +50,62 @@ const App = () => {
   const [eventCode, setEventCode] = useState('');
   const [leaderboard, setLeaderboard] = useState([]);
   const [currentTimer, setCurrentTimer] = useState(0);
+
   const [foundDifferences, setFoundDifferences] = useState([]);
+
+  const [scrambledOrder, setScrambledOrder] = useState([]);
+  const [selectedPiece, setSelectedPiece] = useState(null);
+
   const [isHost, setIsHost] = useState(false);
   const [hostCode, setHostCode] = useState('');
   const [connectionMessage, setConnectionMessage] = useState('');
-
   const [isOffline, setIsOffline] = useState(false);
-  const timerIntervalRef = useRef(null);
-  const timerStartRef = useRef(null);
+  const [currentGameMode, setCurrentGameMode] = useState('spot-the-difference');
 
   const socket = useRef(null);
-  const gameRef = useRef(games[0]);
+  const timerIntervalRef = useRef(null);
+  const serverTimeRef = useRef(0);
   const isHostRef = useRef(isHost);
   isHostRef.current = isHost;
-
   const stateRef = useRef();
   stateRef.current = { teamName, section, userId, eventCode };
 
-  const resetGameState = () => {
-    console.log("Resetting game state...");
+  const resetGameState = useCallback(() => {
     setFoundDifferences([]);
+    setScrambledOrder([]);
+    setSelectedPiece(null);
     setCurrentTimer(0);
     setLeaderboard([]);
-  };
+  }, []);
 
-  const startLocalTimer = () => {
-    stopLocalTimer();
-    timerStartRef.current = performance.now();
-    setCurrentTimer(0);
-    timerIntervalRef.current = setInterval(() => {
-      const elapsed = performance.now() - timerStartRef.current;
-      setCurrentTimer(elapsed);
-    }, 50);
-  };
-
-  const stopLocalTimer = () => {
+  const stopLocalTimer = useCallback(() => {
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
     }
-  };
+  }, []);
+
+  const startLocalTimer = useCallback(() => {
+    stopLocalTimer();
+    timerIntervalRef.current = setInterval(() => {
+      serverTimeRef.current += 50;
+      setCurrentTimer(serverTimeRef.current);
+    }, 50);
+  }, [stopLocalTimer]);
 
   useEffect(() => {
     try {
       const firebaseApp = initializeApp(FIREBASE_CONFIG);
       const authInstance = getAuth(firebaseApp);
       setAuth(authInstance);
-      signInAnonymously(authInstance).catch(error => {
-        console.error('Firebase authentication error:', error);
-      });
+      signInAnonymously(authInstance).catch(error => console.error('Firebase auth error:', error));
     } catch (error) {
-      console.error('Firebase initialization error:', error);
+      console.error('Firebase init error:', error);
     }
 
-    // --- UPDATE: Point this to your live Render backend URL ---
     const serverURL = 'https://quickquest-backend.onrender.com';
 
-    const newSocket = io(serverURL, {
-      transports: ['websocket'],
-      withCredentials: true,
-      autoConnect: true,
-    });
-
+    const newSocket = io(serverURL, { transports: ['websocket'], withCredentials: true, autoConnect: true });
     socket.current = newSocket;
 
     const offlineFallback = setTimeout(() => {
@@ -115,7 +115,7 @@ const App = () => {
         try { newSocket.disconnect(); } catch {}
         socket.current = null;
       }
-    }, 1500);
+    }, 8000);
 
     newSocket.on('connect', () => {
       clearTimeout(offlineFallback);
@@ -131,47 +131,44 @@ const App = () => {
     });
 
     newSocket.on('gameStateUpdate', (data) => {
-      console.log('Received gameStateUpdate:', data.state);
-      if (!isHostRef.current) {
-        if (data.state === 'playing') {
-          resetGameState();
-          setGameState('playing');
-        } else if (data.state === 'leaderboard') {
-          setGameState('leaderboard');
-        } else {
-          setGameState('waitingForHost');
-          setConnectionMessage('Waiting for the host to start...');
+      console.log('Received gameStateUpdate:', data.state, data.gameMode, 'scrambledOrder:', data.scrambledOrder);
+      setCurrentGameMode(data.gameMode);
+      if (isHostRef.current) {
+        if (data.state === 'playing') setGameState('playing');
+        else if (data.state === 'waiting') setGameState('hostDashboard');
+        else if (data.state === 'leaderboard') setGameState('leaderboard');
+        return;
+      }
+      if (data.state === 'playing') {
+        resetGameState();
+        if (data.gameMode === 'image-scramble' && data.scrambledOrder && data.scrambledOrder.length > 0) {
+            setScrambledOrder(data.scrambledOrder);
         }
-      }
-      if (isHostRef.current && data.state === 'leaderboard') {
-        setGameState('leaderboard');
-      }
-    });
-
-    newSocket.on('timerUpdate', (time) => {
-      if (!isHostRef.current) {
-        setCurrentTimer(time);
+        startLocalTimer();
+        setGameState('playing');
+      } else {
+        stopLocalTimer();
+        setGameState(data.state === 'leaderboard' ? 'leaderboard' : 'waitingForHost');
       }
     });
 
-    newSocket.on('leaderboardUpdate', (data) => {
-      setLeaderboard([...data].sort((a, b) => a.time - b.time));
+    newSocket.on('timerUpdate', (timeFromServer) => {
+      serverTimeRef.current = timeFromServer;
+      if (!isHostRef.current) setCurrentTimer(timeFromServer);
     });
 
-    newSocket.on('hostCode', (code) => {
-      setHostCode(code);
-      setGameState('hostDashboard');
-    });
+    newSocket.on('leaderboardUpdate', (data) => setLeaderboard([...data].sort((a, b) => a.time - b.time)));
+    newSocket.on('differenceUpdate', (updatedFoundDifferences) => setFoundDifferences(updatedFoundDifferences));
+    newSocket.on('hostCode', (code) => { setHostCode(code); setGameState('hostDashboard'); });
 
     newSocket.on('joinResponse', (response) => {
       if (response.success) {
         setEventCode(response.eventCode);
+        setConnectionMessage('Successfully joined, waiting for host...');
+        setGameState(response.gameState === 'playing' ? 'playing' : 'waitingForHost');
+        setCurrentGameMode(response.currentGameMode);
         if (response.gameState === 'playing') {
-          resetGameState();
-          setGameState('playing');
-        } else {
-          setGameState('waitingForHost');
-          setConnectionMessage('Successfully joined, waiting for host...');
+          startLocalTimer();
         }
       } else {
         setConnectionMessage('Failed to join event: ' + response.message);
@@ -186,21 +183,20 @@ const App = () => {
       setIsHost(false);
       setEventCode('');
       setHostCode('');
+      setCurrentGameMode('spot-the-difference');
     });
 
     return () => {
       clearTimeout(offlineFallback);
-      try { newSocket.disconnect(); } catch {}
+      if (newSocket) newSocket.disconnect();
       stopLocalTimer();
     };
-  }, []);
+  }, [resetGameState, startLocalTimer, stopLocalTimer]);
 
   useEffect(() => {
     if (auth) {
       const unsubscribe = onAuthStateChanged(auth, (user) => {
-        if (user) {
-          setUserId(user.uid);
-        }
+        if (user) setUserId(user.uid);
         setIsAuthLoading(false);
       });
       return () => unsubscribe();
@@ -213,24 +209,14 @@ const App = () => {
       setTeamName(name || 'Host');
       setSection(teamSection || 'Admin');
       setGameState('hostDashboard');
-
-      if (isOffline) {
-        setHostCode('OFFLINE');
-      } else {
-        socket.current && socket.current.emit('createEvent', { hostId: userId });
-      }
+      if (isOffline) setHostCode('OFFLINE');
+      else socket.current?.emit('createEvent', { hostId: userId });
       return;
     }
-
-    if (!name.trim() || !teamSection.trim()) {
-      alert("Please enter both Team Name and Section!");
-      return;
-    }
-
+    if (!name.trim() || !teamSection.trim()) return alert("Please enter both Team Name and Section!");
     setTeamName(name);
     setSection(teamSection);
     setIsHost(false);
-
     if (isOffline) {
       setEventCode('OFFLINE');
       resetGameState();
@@ -238,33 +224,31 @@ const App = () => {
       startLocalTimer();
       return;
     }
-
     setGameState('waitingForHost');
-    socket.current && socket.current.emit('joinEvent', {
-      eventCode: hostPasswordInput,
-      teamId: userId,
-      teamName: name,
-      section: teamSection
-    });
+    socket.current?.emit('joinEvent', { eventCode: hostPasswordInput, teamId: userId, teamName: name, section: teamSection });
   };
   
-  const handleGameComplete = (time) => {
+  const handleGameComplete = (time, gameId) => {
     if (isOffline) {
       stopLocalTimer();
       setGameState('leaderboard');
-      setLeaderboard(prev =>
-        [...prev, { name: stateRef.current.teamName, section: stateRef.current.section, time }].sort((a, b) => a.time - b.time)
-      );
+      setLeaderboard(prev => [...prev, { name: stateRef.current.teamName, section: stateRef.current.section, time }].sort((a, b) => a.time - b.time));
       return;
     }
     setGameState('leaderboard');
-    socket.current && socket.current.emit('submitTime', {
-      eventCode: stateRef.current.eventCode,
-      teamId: stateRef.current.userId,
-      teamName: stateRef.current.teamName,
-      section: stateRef.current.section,
-      time,
-    });
+    if (gameId === 'spot-the-difference') {
+      socket.current?.emit('submitTime', { ...stateRef.current, time });
+    } else if (gameId === 'image-scramble') {
+      socket.current?.emit('submitScrambleTime', { ...stateRef.current, time });
+    }
+  };
+  
+  const handleDifferenceFound = (index) => {
+    if (isOffline) {
+      setFoundDifferences(prev => [...new Set([...prev, index])]);
+      return;
+    }
+    socket.current?.emit('differenceFound', { eventCode: stateRef.current.eventCode, differenceIndex: index });
   };
   
   const handleStartGame = () => {
@@ -274,9 +258,7 @@ const App = () => {
       startLocalTimer();
       return;
     }
-    if (isHost && hostCode) {
-      socket.current && socket.current.emit('startGame', { eventCode: hostCode });
-    }
+    if (isHost && hostCode) socket.current?.emit('startGame', { eventCode: hostCode, gameMode: currentGameMode });
   };
   
   const handleRestartGame = () => {
@@ -287,9 +269,7 @@ const App = () => {
       return;
     }
     if (isHost && hostCode) {
-      resetGameState();
-      setGameState('hostDashboard');
-      socket.current && socket.current.emit('restartGame', { eventCode: hostCode });
+      socket.current?.emit('restartGame', { eventCode: hostCode, gameMode: currentGameMode });
     }
   };
   
@@ -299,515 +279,235 @@ const App = () => {
       resetGameState();
       setGameState('login');
       setIsHost(false);
-      setEventCode('');
-      setHostCode('');
       return;
     }
-    if (isHost && hostCode) {
-      socket.current && socket.current.emit('endEvent', { eventCode: hostCode });
-    }
+    if (isHost && hostCode) socket.current?.emit('endEvent', { eventCode: hostCode });
   };
 
+
+  const ImageScrambleGameView = ({ game, onComplete, timer, scrambledOrder, setScrambledOrder, selectedPiece, setSelectedPiece }) => {
+    if (!scrambledOrder || scrambledOrder.length === 0) {
+      return (
+        <div className="game-container image-scramble-game">
+          <div className="login-form-box">
+            <h1 className="animated-title">Loading Game...</h1>
+            <p className="loading-message">Waiting for puzzle pieces from the host.</p>
+          </div>
+        </div>
+      );
+    }
+
+
+    const handlePieceClick = (index) => {
+      if (selectedPiece === null) {
+        setSelectedPiece(index);
+      } else {
+        const newOrder = [...scrambledOrder];
+        [newOrder[selectedPiece], newOrder[index]] = [newOrder[index], newOrder[selectedPiece]];
+        setScrambledOrder(newOrder);
+        setSelectedPiece(null);
+
+
+        const isSolved = newOrder.every((piece, i) => piece === i + 1);
+        if (isSolved) {
+          onComplete(timer, game.id);
+        }
+      }
+    };
+  
+    return (
+      <div className="game-container image-scramble-game">
+        <div className="timer">Time: {(timer / 1000).toFixed(2)}s</div>
+        <div className="image-grid">
+          {scrambledOrder.map((piece, index) => (
+            <div
+              key={index}
+              className={`image-piece ${selectedPiece === index ? 'selected' : ''}`}
+              onClick={() => handlePieceClick(index)}
+            >
+              <img src={game.imageParts[piece - 1]} alt={`Piece ${piece}`} />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+  
+  // --- Sub-Components ---
   const LoginScreen = ({ onLogin, userId }) => {
     const [name, setName] = useState('');
     const [teamSection, setTeamSection] = useState('');
     const [hostPasswordInput, setHostPasswordInput] = useState('');
-
-    const handleLoginSubmit = (e) => {
-      e.preventDefault();
-      onLogin(name, teamSection, hostPasswordInput);
-    };
-
+    const handleSubmit = (e) => { e.preventDefault(); onLogin(name, teamSection, hostPasswordInput); };
     return (
       <div className="login-container">
         <div className="login-form-box">
-          <img src="/images/logo.png" alt="Logo" className="logo" onError={(e) => { e.target.onerror = null; e.target.src='https://placehold.co/150x150/ffffff/000000?text=Logo'; }} />
+          <img src="/images/logo/logo.jpg" alt="Logo" className="logo" />
           <h1 className="animated-title">Welcome</h1>
           <h2 className="animated-subtitle">DO-IT</h2>
-          <form className="login-form" onSubmit={handleLoginSubmit}>
-            <div className="input-group">
-              <input
-                type="text"
-                placeholder="Team Name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <input
-                type="text"
-                placeholder="Section"
-                value={teamSection}
-                onChange={(e) => setTeamSection(e.target.value)}
-              />
-            </div>
-            <div className="input-group">
-              <input
-                type="text"
-                placeholder="Host Password / Event Code"
-                value={hostPasswordInput}
-                onChange={(e) => setHostPasswordInput(e.target.value)}
-              />
-            </div>
-            <button type="submit" className="login-button">
-              Next
-            </button>
+          <form className="login-form" onSubmit={handleSubmit}>
+            <input type="text" placeholder="Team Name" value={name} onChange={(e) => setName(e.target.value)} />
+            <input type="text" placeholder="Section" value={teamSection} onChange={(e) => setTeamSection(e.target.value)} />
+            <input type="text" placeholder="Host Password / Event Code" value={hostPasswordInput} onChange={(e) => setHostPasswordInput(e.target.value)} />
+            <button type="submit" className="login-button">Next</button>
           </form>
-          {userId && (
-            <div className="user-id">
-              Your ID: {userId}
-            </div>
-          )}
+          {userId && <div className="user-id">Your ID: {userId}</div>}
         </div>
       </div>
     );
   };
   
-  const HostDashboard = ({ hostCode, onStart, onRestart, onEnd }) => {
-    return (
-      <div className="login-container">
-        <div className="login-form-box">
-          <h1 className="animated-title">Host Dashboard</h1>
-          <div className="host-code-display">{hostCode || 'Generating code...'}</div>
-          <p className="animated-subtitle">Players can join using this code.</p>
-          <div className="host-controls">
-            <button className="login-button" onClick={onStart} disabled={!hostCode && !isOffline}>Start Game</button>
-            <button className="login-button" onClick={onRestart} disabled={false}>Restart Game</button>
-            <button className="login-button" onClick={onEnd} disabled={false}>End Event</button>
-          </div>
+  const HostDashboard = ({ hostCode, onStart, onRestart, onEnd, currentGameMode, setCurrentGameMode }) => (
+    <div className="login-container">
+      <div className="login-form-box">
+        <h1 className="animated-title">Host Dashboard</h1>
+        <div className="host-code-display">{hostCode || 'Generating...'}</div>
+        <p className="animated-subtitle">Players can join using this code.</p>
+        <div className="host-controls">
+          <select value={currentGameMode} onChange={(e) => setCurrentGameMode(e.target.value)} className="game-select">
+            <option value="spot-the-difference">Spot the Difference</option>
+            <option value="image-scramble">Image Scramble</option>
+          </select>
+          <button className="login-button" onClick={onStart} disabled={!hostCode && !isOffline}>Start Game</button>
+          <button className="login-button" onClick={onRestart}>Restart Game</button>
+          <button className="login-button" onClick={onEnd}>End Event</button>
         </div>
       </div>
-    );
-  };
+    </div>
+  );
 
-  const GameView = ({ game, onComplete, timer, foundDifferences, setFoundDifferences }) => {
+
+  const HostPlayingView = ({ onRestart, onEnd }) => (
+    <div className="login-container">
+      <div className="login-form-box">
+        <h1 className="animated-title">Game in Progress</h1>
+        <p className="animated-subtitle">Players are competing now!</p>
+        <div className="host-controls">
+          <button className="login-button" onClick={onRestart}>Restart Game</button>
+          <button className="login-button" onClick={onEnd}>End Event</button>
+        </div>
+      </div>
+    </div>
+  );
+
+
+  const GameView = ({ game, onComplete, timer, foundDifferences, onDifferenceFound }) => {
     const imgRefs = useRef([]);
-    
     const handleClick = (e) => {
       const img = e.currentTarget;
-      if (!img || img.naturalWidth === 0) return;
-
+      if (!img || !img.naturalWidth) return;
       const rect = img.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
       const clickY = e.clientY - rect.top;
-      const radius = 20;
-
       const scaleX = rect.width / img.naturalWidth;
       const scaleY = rect.height / img.naturalHeight;
-
+      console.log(`%c[DEBUG] Clicked at: (${clickX.toFixed(2)}, ${clickY.toFixed(2)})`, 'color: cyan;');
+      game.differenceCoords.forEach((coord, i) => {
+        const targetX = coord.x * scaleX;
+        const targetY = coord.y * scaleY;
+        const distance = Math.hypot(clickX - targetX, clickY - targetY);
+        console.log(` -> Checking diff #${i} at (${targetX.toFixed(2)}, ${targetY.toFixed(2)}). Distance: ${distance.toFixed(2)}`);
+      });
+      const radius = 25;
       const foundIndex = game.differenceCoords.findIndex((coord, i) => {
         if (foundDifferences.includes(i)) return false;
-
-        const coordX = coord.x * scaleX;
-        const coordY = coord.y * scaleY;
-
-        return Math.abs(clickX - coordX) < radius && Math.abs(clickY - coordY) < radius;
+        const targetX = coord.x * scaleX;
+        const targetY = coord.y * scaleY;
+        return Math.hypot(clickX - targetX, clickY - targetY) < radius;
       });
-
       if (foundIndex !== -1) {
-        setFoundDifferences(prevFound => {
-          const newFound = [...prevFound, foundIndex];
-          if (newFound.length === game.differenceCoords.length) {
-            onComplete(timer);
-          }
-          return newFound;
-        });
+        console.log(`%cSUCCESS: Found difference #${foundIndex}`, 'color: lightgreen; font-weight: bold;');
+        onDifferenceFound(foundIndex);
       }
     };
-    
-    const displayTimer = (timer / 1000).toFixed(2);
-
+    useEffect(() => {
+        if (foundDifferences.length > 0 && foundDifferences.length === game.differenceCoords.length) {
+            onComplete(timer, game.id);
+        }
+    }, [foundDifferences, game.differenceCoords.length, onComplete, timer, game.id]);
     return (
       <div className="game-container">
-        <div className="timer">Time: {displayTimer}s</div>
+        <div className="timer">Time: {(timer / 1000).toFixed(2)}s</div>
         <div className="images">
           {['left', 'right'].map((side, index) => (
             <div className="image-wrapper" key={side}>
-              <img
-                src={game.images[side]}
-                alt={side}
-                ref={(el) => (imgRefs.current[index] = el)}
-                onClick={handleClick}
-              />
+              <img src={game.images[side]} alt={side} ref={(el) => (imgRefs.current[index] = el)} onClick={handleClick} />
               {foundDifferences.map(i => {
                 const coord = game.differenceCoords[i];
-                if (!imgRefs.current[index] || !imgRefs.current[index].naturalWidth) return null;
-
+                if (!imgRefs.current[index]?.naturalWidth) return null;
                 const rect = imgRefs.current[index].getBoundingClientRect();
                 const scaleX = rect.width / imgRefs.current[index].naturalWidth;
                 const scaleY = rect.height / imgRefs.current[index].naturalHeight;
-
-                const circleX = coord.x * scaleX;
-                const circleY = coord.y * scaleY;
-
-                return (
-                  <div
-                    key={i}
-                    className="circle"
-                    style={{
-                      position: 'absolute',
-                      top: circleY - 12,
-                      left: circleX - 12,
-                    }}
-                  ></div>
-                );
+                return <div key={i} className="circle" style={{ position: 'absolute', top: (coord.y * scaleY) - 15, left: (coord.x * scaleX) - 15 }}></div>;
               })}
             </div>
           ))}
         </div>
-        <div className="found-count">
-          {foundDifferences.length}/{game.differenceCoords.length} found
-        </div>
+        <div className="found-count">{foundDifferences.length}/{game.differenceCoords.length} found</div>
       </div>
     );
   };
 
-  const Leaderboard = ({ leaderboardData, onRestart, onEnd, isHost }) => {
-    return (
-      <div className="leaderboard-container">
-        <h2>Leaderboard</h2>
-        <div className="scores-list">
-          <table>
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Team Name</th>
-                <th>Section</th>
-                <th>Time (s)</th>
+  const Leaderboard = ({ leaderboardData, onRestart, onEnd, isHost }) => (
+    <div className="leaderboard-container">
+      <h2>Leaderboard</h2>
+      <div className="scores-list">
+        <table>
+          <thead><tr><th>Rank</th><th>Team Name</th><th>Section</th><th>Time (s)</th></tr></thead>
+          <tbody>
+            {leaderboardData.map((player, index) => (
+              <tr key={player.teamId || (player.name + index)}>
+                <td>{index + 1}</td><td>{player.name}</td><td>{player.section}</td><td>{(player.time / 1000).toFixed(2)}</td>
               </tr>
-            </thead>
-            <tbody>
-              {leaderboardData.map((player, index) => (
-                <tr key={player.teamId || (player.name + index)}>
-                  <td>{index + 1}</td>
-                  <td>{player.name}</td>
-                  <td>{player.section}</td>
-                  <td>{(player.time / 1000).toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {isHost && (
-          <div className="host-controls">
-            <button onClick={onRestart} className="play-again-button">
-              Restart Game
-            </button>
-            <button onClick={onEnd} className="play-again-button">
-              End Event
-            </button>
-          </div>
-        )}
-        {!isHost && (
-          <p className="waiting-message">Waiting for the host to restart...</p>
-        )}
+            ))}
+          </tbody>
+        </table>
       </div>
-    );
-  };
-
-  const WaitingForHostScreen = ({ connectionMessage }) => {
-    return (
-      <div className="login-container">
-        <div className="login-form-box">
-          <h1 className="animated-title">Waiting for Host...</h1>
-          <p className="loading-message">{connectionMessage}</p>
-        </div>
-      </div>
-    );
-  };
-
-  const renderContent = () => {
-    if (isAuthLoading) {
-      return <div>Authenticating...</div>;
-    }
-
-    switch (gameState) {
-      case 'login':
-        return <LoginScreen onLogin={handleLogin} userId={userId} />;
-      case 'hostDashboard':
-        return <HostDashboard hostCode={hostCode} onStart={handleStartGame} onRestart={handleRestartGame} onEnd={handleEndEvent} />;
-      case 'waitingForHost':
-        return <WaitingForHostScreen connectionMessage={connectionMessage} />;
-      case 'playing':
-        return <GameView game={gameRef.current} onComplete={handleGameComplete} timer={currentTimer} foundDifferences={foundDifferences} setFoundDifferences={setFoundDifferences} />;
-      case 'leaderboard':
-        return <Leaderboard leaderboardData={leaderboard} onRestart={handleRestartGame} onEnd={handleEndEvent} isHost={isHost} />;
-      default:
-        return <div>Loading...</div>;
-    }
-  };
-
-  return (
-    <div>
-      {renderContent()}
+      {isHost ? (
+        <div className="host-controls"><button onClick={onRestart}>Restart Game</button><button onClick={onEnd}>End Event</button></div>
+      ) : <p className="waiting-message">Waiting for the host to restart...</p>}
     </div>
   );
+
+
+  const WaitingForHostScreen = ({ connectionMessage }) => (
+    <div className="login-container">
+      <div className="login-form-box">
+        <h1 className="animated-title">Waiting for Host...</h1>
+        <p className="loading-message">{connectionMessage || 'Connecting...'}</p>
+      </div>
+    </div>
+  );
+
+
+  const renderContent = () => {
+    if (isAuthLoading) return <div>Authenticating...</div>;
+    switch (gameState) {
+      case 'login': return <LoginScreen onLogin={handleLogin} userId={userId} />;
+      case 'hostDashboard': return <HostDashboard hostCode={hostCode} onStart={handleStartGame} onRestart={handleRestartGame} onEnd={handleEndEvent} currentGameMode={currentGameMode} setCurrentGameMode={setCurrentGameMode} />;
+      case 'waitingForHost': return <WaitingForHostScreen connectionMessage={connectionMessage} />;
+      case 'playing':
+        if (isHost) return <HostPlayingView onRestart={handleRestartGame} onEnd={handleEndEvent} />;
+        if (currentGameMode === 'spot-the-difference') {
+          return <GameView game={games['spot-the-difference']} onComplete={handleGameComplete} timer={currentTimer} foundDifferences={foundDifferences} onDifferenceFound={handleDifferenceFound} />;
+        } else if (currentGameMode === 'image-scramble') {
+          return <ImageScrambleGameView game={games['image-scramble']} onComplete={handleGameComplete} timer={currentTimer} scrambledOrder={scrambledOrder} setScrambledOrder={setScrambledOrder} selectedPiece={selectedPiece} setSelectedPiece={setSelectedPiece} />;
+        }
+        break;
+      case 'leaderboard': return <Leaderboard leaderboardData={leaderboard} onRestart={handleRestartGame} onEnd={handleEndEvent} isHost={isHost} />;
+      default: return <div>Loading...</div>;
+    }
+  };
+
+
+  return <div>{renderContent()}</div>;
 };
 
-const styles = `
-  body {
-    font-family: 'Arial', sans-serif;
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-    color: white;
-    background: radial-gradient(circle at center, #2e2e2e 0%, #0a0a0a 100%);
-  }
 
-  .login-container {
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-    background: radial-gradient(circle at center, #2e2e2e 0%, #0a0a0a 100%);
-    color: white;
-  }
-
-  .login-form-box {
-    background: rgba(58, 63, 74, 0.9);
-    padding: 30px 40px;
-    border-radius: 10px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-    text-align: center;
-    width: 300px;
-  }
-  
-  .logo {
-    max-width: 150px;
-    height: auto;
-    margin-bottom: 10px;
-    filter: drop-shadow(0 0 10px #fff);
-  }
-
-  .user-id {
-    margin-top: 15px;
-    font-size: 0.8em;
-    color: #a0a0a0;
-  }
-
-  .animated-title {
-    font-size: 2em;
-    margin-bottom: 0;
-    animation: fadeInDown 1s ease-in-out;
-  }
-
-  .animated-subtitle {
-    font-size: 1.5em;
-    margin-top: 5px;
-    margin-bottom: 15px;
-    animation: fadeInDown 1.2s ease-in-out;
-  }
-
-  .login-form {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-
-  .input-group input {
-    width: 100%;
-    padding: 10px;
-    border: none;
-    border-radius: 5px;
-    background: #282c34;
-    color: white;
-    font-size: 1em;
-  }
-
-  .login-button {
-    padding: 12px;
-    border: none;
-    border-radius: 5px;
-    background: #000;
-    color: white;
-    font-size: 1.1em;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 15px rgba(255, 255, 255, 0.2), inset 0 0 10px rgba(255, 255, 255, 0.1);
-  }
-
-  .login-button:hover {
-    background: #111;
-    box-shadow: 0 4px 20px rgba(255, 255, 255, 0.3), inset 0 0 15px rgba(255, 255, 255, 0.2);
-  }
-
-  @keyframes fadeInDown {
-    0% {
-      opacity: 0;
-      transform: translateY(-20px);
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .host-code-display {
-    font-size: 3em;
-    font-weight: bold;
-    color: #61dafb;
-    margin-bottom: 20px;
-  }
-
-  .loading-message, .waiting-message {
-    font-size: 1.2em;
-    color: #a0a0a0;
-  }
-  
-  .host-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    margin-top: 20px;
-  }
-  
-  .host-controls button:disabled {
-    background-color: #555;
-    cursor: not-allowed;
-    box-shadow: none;
-    opacity: 0.7;
-  }
-
-  .game-container {
-    text-align: center;
-    padding: 20px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-    background-color: #1c1c1c;
-  }
-
-  .timer {
-    font-size: 2em;
-    font-weight: bold;
-    margin-bottom: 20px;
-    background: rgba(0,0,0,0.6);
-    color: white;
-    padding: 5px 15px;
-    border-radius: 8px;
-  }
-
-  .images {
-    display: flex;
-    justify-content: center;
-    gap: 20px;
-  }
-
-  .image-wrapper {
-    position: relative;
-  }
-
-  .image-wrapper img {
-    max-width: 400px;
-    border-radius: 8px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
-    cursor: pointer;
-  }
-
-  .circle {
-    position: absolute;
-    border: 3px solid #ff7eb3;
-    background-color: rgba(255, 126, 179, 0.2);
-    border-radius: 50%;
-    width: 24px;
-    height: 24px;
-    pointer-events: none;
-  }
-
-  .found-count {
-    font-size: 1.2em;
-    margin-top: 20px;
-  }
-
-  .leaderboard-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-    background: radial-gradient(circle at center, #1a1a1a 0%, #000000 100%);
-    color: white;
-    font-family: Arial, sans-serif;
-    padding: 20px;
-    box-shadow: inset 0 0 50px rgba(255, 255, 255, 0.1);
-  }
-
-  .scores-list {
-    width: 80%;
-    max-width: 600px;
-    background: rgba(50, 50, 50, 0.9);
-    border-radius: 10px;
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4), inset 0 0 15px rgba(255, 255, 255, 0.1);
-    overflow: hidden;
-  }
-
-  .scores-list table {
-    width: 100%;
-    border-collapse: collapse;
-    color: white;
-    text-align: center;
-  }
-
-  .scores-list th, .scores-list td {
-    padding: 15px;
-    border-bottom: 1px solid #4a4f59;
-  }
-
-  .scores-list tr:last-child td {
-    border-bottom: none;
-  }
-
-  .play-again-button {
-    margin-top: 30px;
-    padding: 12px 24px;
-    border: none;
-    border-radius: 5px;
-    background-color: #000;
-    color: white;
-    font-size: 1.1em;
-    font-weight: bold;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 15px rgba(255, 255, 255, 0.2), inset 0 0 10px rgba(255, 255, 255, 0.1);
-  }
-
-  .play-again-button:hover {
-    background-color: #111;
-    box-shadow: 0 4px 20px rgba(255, 255, 255, 0.3), inset 0 0 15px rgba(255, 255, 255, 0.2);
-  }
-
-  @media (max-width: 768px) {
-    .images {
-      flex-direction: column;
-      align-items: center;
-    }
-    .image-wrapper img {
-      max-width: 100%;
-    }
-    .leaderboard-container h2 {
-      font-size: 1.8em;
-    }
-    .scores-list {
-      width: 100%;
-      max-width: 300px;
-    }
-    .scores-list th, .scores-list td {
-      font-size: 0.9em;
-      padding: 10px;
-    }
-    .game-container {
-      padding: 10px;
-      height: auto;
-    }
-  }
-`;
-
+const styles = `body{font-family:'Arial',sans-serif;margin:0;padding:0;box-sizing:border-box;color:#fff;background:radial-gradient(circle at center,#2e2e2e 0%,#0a0a0a 100%)}.login-container,.leaderboard-container,.game-container{height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center}.login-form-box{background:rgba(58,63,74,.9);padding:30px 40px;border-radius:10px;box-shadow:0 4px 8px rgba(0,0,0,.2);text-align:center;width:300px}.logo{max-width:150px;height:auto;margin-bottom:10px;filter:drop-shadow(0 0 10px #fff)}.user-id{margin-top:15px;font-size:.8em;color:#a0a0a0}.animated-title{font-size:2em;margin-bottom:0;animation:fadeInDown 1s ease-in-out}.animated-subtitle{font-size:1.5em;margin-top:5px;margin-bottom:15px;animation:fadeInDown 1.2s ease-in-out}.login-form{display:flex;flex-direction:column;gap:10px}.login-form input,.game-select{width:100%;padding:10px;border:none;border-radius:5px;background:#282c34;color:#fff;font-size:1em}.login-button,.host-controls button{padding:12px;border:none;border-radius:5px;background:#000;color:#fff;font-size:1.1em;font-weight:700;cursor:pointer;transition:all .3s ease;box-shadow:0 4px 15px rgba(255,255,255,.2),inset 0 0 10px rgba(255,255,255,.1)}.login-button:hover,.host-controls button:hover{background:#111;box-shadow:0 4gpx 20px rgba(255,255,255,.3),inset 0 0 15px rgba(255,255,255,.2)}@keyframes fadeInDown{0%{opacity:0;transform:translateY(-20px)}100%{opacity:1;transform:translateY(0)}}.host-code-display{font-size:3em;font-weight:700;color:#61dafb;margin-bottom:20px}.loading-message,.waiting-message{font-size:1.2em;color:#a0a0a0}.host-controls{display:flex;flex-direction:column;gap:10px;margin-top:20px; width: 100%;}.host-controls button:disabled{background-color:#555;cursor:not-allowed;box-shadow:none;opacity:.7}.game-container{background-color:#1c1c1c}.timer{font-size:2em;font-weight:700;margin-bottom:20px;background:rgba(0,0,0,.6);padding:5px 15px;border-radius:8px}.images{display:flex;justify-content:center;gap:20px}.image-wrapper{position:relative}.image-wrapper img{max-width:400px;border-radius:8px;box-shadow:0 4px 8px rgba(0,0,0,.2);cursor:pointer}.circle{position:absolute;border:3px solid #ff7eb3;background-color:rgba(255,126,179,.2);border-radius:50%;width:30px;height:30px;pointer-events:none}.found-count{font-size:1.2em;margin-top:20px}.leaderboard-container{background:radial-gradient(circle at center,#1a1a1a 0%,#000 100%);padding:20px;box-shadow:inset 0 0 50px rgba(255,255,255,.1)}.scores-list{width:80%;max-width:600px;background:rgba(50,50,50,.9);border-radius:10px;box-shadow:0 4px 8px rgba(0,0,0,.4),inset 0 0 15px rgba(255,255,255,.1);overflow:hidden}.scores-list table{width:100%;border-collapse:collapse;text-align:center}.scores-list th,.scores-list td{padding:15px;border-bottom:1px solid #4a4f59}.scores-list tr:last-child td{border-bottom:none}@media (max-width:768px){.images{flex-direction:column;align-items:center}.image-wrapper img{max-width:100%}.scores-list{width:100%}}.game-select{background: #333;color: #fff;border: 1px solid #555;padding: 10px;margin-bottom: 20px;}.image-scramble-game{background: #000;}.image-grid{display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;width:calc(100% - 10px);max-width:600px;background:#333;padding:5px;border-radius:10px;}.image-piece{border:2px solid transparent;transition:border-color .2s;cursor:pointer;}.image-piece img{display:block;width:100%;height:auto;border-radius:5px;}.image-piece.selected{border-color:#61dafb;}.host-controls .game-select {margin-bottom: 10px;}`
 const styleSheet = document.createElement("style");
 styleSheet.innerText = styles;
 document.head.appendChild(styleSheet);
+
 
 export default App;
