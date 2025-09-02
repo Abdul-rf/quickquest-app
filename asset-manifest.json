@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/quickquest-app/static/js/main.399f3f20.js",
+    "main.js": "/quickquest-app/static/js/main.ed139ecc.js",
     "index.html": "/quickquest-app/index.html",
-    "main.399f3f20.js.map": "/quickquest-app/static/js/main.399f3f20.js.map"
+    "main.ed139ecc.js.map": "/quickquest-app/static/js/main.ed139ecc.js.map"
   },
   "entrypoints": [
-    "static/js/main.399f3f20.js"
+    "static/js/main.ed139ecc.js"
   ]
 }
